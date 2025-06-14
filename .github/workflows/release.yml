@@ -1,51 +1,41 @@
 name: Build and Release
 
 on:
+  release:
+    types: [created, published]
   push:
     tags:
-      - 'v*.*.*'  # 触发条件：推送版本标签，如 v0.1.0
-  release:
-    types: [created, published]  # 在GitHub界面创建或发布release时触发
-  workflow_dispatch:  # 允许手动触发
+      - 'v*.*.*'
+  workflow_dispatch:
 
 env:
   GO_VERSION: '1.21'
 
 jobs:
   build:
-    name: Build for ${{ matrix.os }}-${{ matrix.arch }}
-    runs-on: ${{ matrix.runner }}
+    name: Build
+    runs-on: ubuntu-latest
     strategy:
       matrix:
         include:
-          # macOS Intel
-          - os: darwin
-            arch: amd64
-            runner: macos-latest
-            binary_name: openCursor-darwin-amd64
-          # macOS Apple Silicon
-          - os: darwin
-            arch: arm64
-            runner: macos-latest
-            binary_name: openCursor-darwin-arm64
-          # Linux x86_64
-          - os: linux
-            arch: amd64
-            runner: ubuntu-latest
-            binary_name: openCursor-linux-amd64
-          # Linux ARM64
-          - os: linux
-            arch: arm64
-            runner: ubuntu-latest
-            binary_name: openCursor-linux-arm64
-          # Windows (可选)
-          - os: windows
-            arch: amd64
-            runner: windows-latest
-            binary_name: openCursor-windows-amd64.exe
+          - goos: darwin
+            goarch: amd64
+            suffix: darwin-amd64
+          - goos: darwin
+            goarch: arm64
+            suffix: darwin-arm64
+          - goos: linux
+            goarch: amd64
+            suffix: linux-amd64
+          - goos: linux
+            goarch: arm64
+            suffix: linux-arm64
+          - goos: windows
+            goarch: amd64
+            suffix: windows-amd64.exe
 
     steps:
-    - name: Checkout code
+    - name: Checkout
       uses: actions/checkout@v4
 
     - name: Set up Go
@@ -53,74 +43,79 @@ jobs:
       with:
         go-version: ${{ env.GO_VERSION }}
 
-    - name: Cache Go modules
-      uses: actions/cache@v3
-      with:
-        path: |
-          ~/.cache/go-build
-          ~/go/pkg/mod
-        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-        restore-keys: |
-          ${{ runner.os }}-go-
-
-    - name: Get dependencies
-      run: go mod download
-
-    - name: Build binary
-      env:
-        GOOS: ${{ matrix.os }}
-        GOARCH: ${{ matrix.arch }}
-        CGO_ENABLED: 0
+    - name: Get version
+      id: version
       run: |
         if [[ "${{ github.event_name }}" == "release" ]]; then
           VERSION="${{ github.event.release.tag_name }}"
-        else
+        elif [[ "$GITHUB_REF" == refs/tags/* ]]; then
           VERSION=${GITHUB_REF#refs/tags/}
+        else
+          VERSION="dev-$(git rev-parse --short HEAD)"
         fi
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
         echo "Building version: $VERSION"
-        go build -ldflags="-s -w -X main.Version=$VERSION" -o ${{ matrix.binary_name }}
+
+    - name: Build
+      env:
+        GOOS: ${{ matrix.goos }}
+        GOARCH: ${{ matrix.goarch }}
+        CGO_ENABLED: 0
+      run: |
+        BINARY_NAME="openCursor-${{ matrix.suffix }}"
+        go build -ldflags="-s -w -X main.Version=${{ steps.version.outputs.version }}" -o "$BINARY_NAME"
+        ls -la "$BINARY_NAME"
 
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
-        name: ${{ matrix.binary_name }}
-        path: ${{ matrix.binary_name }}
-        retention-days: 1
+        name: openCursor-${{ matrix.suffix }}
+        path: openCursor-${{ matrix.suffix }}
 
   release:
-    name: Create Release
+    name: Release
     needs: build
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'release'
+    if: github.event_name == 'release' || startsWith(github.ref, 'refs/tags/')
     permissions:
       contents: write
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Download all artifacts
+    - name: Download artifacts
       uses: actions/download-artifact@v4
       with:
-        path: ./artifacts
+        path: ./binaries
 
-    - name: Prepare release assets
+    - name: List downloaded files
       run: |
-        mkdir -p ./release-assets
-        # 移动所有二进制文件到release-assets目录
-        find ./artifacts -name "openCursor-*" -type f -exec cp {} ./release-assets/ \;
-        # 创建校验和文件
-        cd ./release-assets
-        sha256sum * > checksums.txt
-        ls -la
+        echo "Downloaded files:"
+        find ./binaries -type f -exec ls -la {} \;
 
-    - name: Upload Release Assets
+    - name: Create checksums
+      run: |
+        cd ./binaries
+        find . -name "openCursor-*" -type f -exec sha256sum {} \; > checksums.txt
+        cat checksums.txt
+
+    - name: Get tag name
+      id: tag
+      run: |
+        if [[ "${{ github.event_name }}" == "release" ]]; then
+          TAG_NAME="${{ github.event.release.tag_name }}"
+        else
+          TAG_NAME=${GITHUB_REF#refs/tags/}
+        fi
+        echo "tag=$TAG_NAME" >> $GITHUB_OUTPUT
+
+    - name: Upload to release
       uses: softprops/action-gh-release@v1
       with:
-        tag_name: ${{ github.event_name == 'release' && github.event.release.tag_name || github.ref_name }}
-        name: Release ${{ github.event_name == 'release' && github.event.release.tag_name || github.ref_name }}
+        tag_name: ${{ steps.tag.outputs.tag }}
+        files: |
+          ./binaries/*/openCursor-*
+          ./binaries/checksums.txt
         body: |
-          ## 🚀 openCursor ${{ github.event_name == 'release' && github.event.release.tag_name || github.ref_name }}
+          ## 🚀 openCursor ${{ steps.tag.outputs.tag }}
           
           ### 📦 下载说明
           
@@ -129,64 +124,30 @@ jobs:
           - Apple Silicon (M1/M2/M3): `openCursor-darwin-arm64`
           
           **Linux 用户：**
-          - x86_64: `openCursor-linux-amd64`
+          - x86_64: `openCursor-linux-amd64`  
           - ARM64: `openCursor-linux-arm64`
           
           **Windows 用户：**
           - x86_64: `openCursor-windows-amd64.exe`
           
-          ### 📋 安装方法
+          ### 📋 快速安装
           
-          **macOS/Linux:**
           ```bash
-          # 下载对应你系统的二进制文件
-          wget https://github.com/${{ github.repository }}/releases/download/${{ github.event_name == 'release' && github.event.release.tag_name || github.ref_name }}/openCursor-darwin-amd64
+          # macOS/Linux - 下载并安装
+          wget https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.tag }}/openCursor-darwin-amd64
+          chmod +x openCursor-darwin-amd64
+          sudo mv openCursor-darwin-amd64 /usr/local/bin/openCursor
           
-          # 重命名并添加执行权限
-          mv openCursor-darwin-amd64 openCursor
-          chmod +x openCursor
+          # 配置API密钥
+          export OPENAI_API_KEY="your-deepseek-api-key"
           
-          # 移动到PATH目录
-          sudo mv openCursor /usr/local/bin/
+          # 开始使用
+          openCursor "Hello world"
           ```
           
-          **Windows:**
-          ```powershell
-          # 下载 openCursor-windows-amd64.exe
-          # 重命名为 openCursor.exe 并放到 PATH 目录
-          ```
+          ### 🔍 文件校验
           
-          ### ✅ 文件校验
-          
-          使用 `checksums.txt` 文件验证下载文件的完整性：
           ```bash
           sha256sum -c checksums.txt
           ```
-          
-          ### 🔧 配置和使用
-          
-          ```bash
-          # 设置API密钥
-          export OPENAI_API_KEY="your-deepseek-api-key"
-          
-          # 查看版本
-          openCursor version
-          
-          # 开始使用
-          openCursor "Hello, how are you?"
-          ```
-          
-          ### 🛠️ 环境变量
-          
-          - `OPENAI_API_KEY`: DeepSeek API密钥 (必需)
-          - `MODEL`: 模型名称 (默认: deepseek-chat)
-          - `BASE_URL`: API基础URL (默认: https://api.deepseek.com/v1)
-          
-          ---
-          
-          如有问题请提交 [Issue](https://github.com/${{ github.repository }}/issues)
-        draft: false
-        prerelease: false
-        files: |
-          ./release-assets/*
         token: ${{ secrets.GITHUB_TOKEN }} 
