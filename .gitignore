@@ -1,0 +1,44 @@
+# 构建产物
+openCursor
+openCursor.exe
+dist/
+*.exe
+*.out
+
+# Go 临时文件
+*.test
+*.prof
+*.cpu
+*.mem
+
+# IDE 和编辑器文件
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 环境变量文件
+.env
+.env.local
+
+# 日志文件
+*.log
+
+# 临时目录
+tmp/
+temp/
+
+# 覆盖率报告
+coverage.out
+coverage.html
+
+# 调试文件
+debug
+
+# 依赖模块缓存（如果不想提交）
+# vendor/ 

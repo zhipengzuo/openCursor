@@ -1,0 +1,184 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'  # 触发条件：推送版本标签，如 v0.1.0
+  workflow_dispatch:  # 允许手动触发
+
+env:
+  GO_VERSION: '1.21'
+
+jobs:
+  build:
+    name: Build for ${{ matrix.os }}-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          # macOS Intel
+          - os: darwin
+            arch: amd64
+            runner: macos-latest
+            binary_name: openCursor-darwin-amd64
+          # macOS Apple Silicon
+          - os: darwin
+            arch: arm64
+            runner: macos-latest
+            binary_name: openCursor-darwin-arm64
+          # Linux x86_64
+          - os: linux
+            arch: amd64
+            runner: ubuntu-latest
+            binary_name: openCursor-linux-amd64
+          # Linux ARM64
+          - os: linux
+            arch: arm64
+            runner: ubuntu-latest
+            binary_name: openCursor-linux-arm64
+          # Windows (可选)
+          - os: windows
+            arch: amd64
+            runner: windows-latest
+            binary_name: openCursor-windows-amd64.exe
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: ${{ env.GO_VERSION }}
+
+    - name: Cache Go modules
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cache/go-build
+          ~/go/pkg/mod
+        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+        restore-keys: |
+          ${{ runner.os }}-go-
+
+    - name: Get dependencies
+      run: go mod download
+
+    - name: Build binary
+      env:
+        GOOS: ${{ matrix.os }}
+        GOARCH: ${{ matrix.arch }}
+        CGO_ENABLED: 0
+      run: |
+        VERSION=${GITHUB_REF#refs/tags/}
+        go build -ldflags="-s -w -X main.Version=$VERSION" -o ${{ matrix.binary_name }}
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.binary_name }}
+        path: ${{ matrix.binary_name }}
+        retention-days: 1
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: ./artifacts
+
+    - name: Prepare release assets
+      run: |
+        mkdir -p ./release-assets
+        # 移动所有二进制文件到release-assets目录
+        find ./artifacts -name "openCursor-*" -type f -exec cp {} ./release-assets/ \;
+        # 创建校验和文件
+        cd ./release-assets
+        sha256sum * > checksums.txt
+        ls -la
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        name: Release ${{ github.ref_name }}
+        body: |
+          ## 🚀 openCursor ${{ github.ref_name }}
+          
+          ### 📦 下载说明
+          
+          **macOS 用户：**
+          - Intel 芯片: `openCursor-darwin-amd64`
+          - Apple Silicon (M1/M2/M3): `openCursor-darwin-arm64`
+          
+          **Linux 用户：**
+          - x86_64: `openCursor-linux-amd64`
+          - ARM64: `openCursor-linux-arm64`
+          
+          **Windows 用户：**
+          - x86_64: `openCursor-windows-amd64.exe`
+          
+          ### 📋 安装方法
+          
+          **macOS/Linux:**
+          ```bash
+          # 下载对应你系统的二进制文件
+          wget https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/openCursor-darwin-amd64
+          
+          # 重命名并添加执行权限
+          mv openCursor-darwin-amd64 openCursor
+          chmod +x openCursor
+          
+          # 移动到PATH目录
+          sudo mv openCursor /usr/local/bin/
+          ```
+          
+          **Windows:**
+          ```powershell
+          # 下载 openCursor-windows-amd64.exe
+          # 重命名为 openCursor.exe 并放到 PATH 目录
+          ```
+          
+          ### ✅ 文件校验
+          
+          使用 `checksums.txt` 文件验证下载文件的完整性：
+          ```bash
+          sha256sum -c checksums.txt
+          ```
+          
+          ### 🔧 配置和使用
+          
+          ```bash
+          # 设置API密钥
+          export OPENAI_API_KEY="your-deepseek-api-key"
+          
+          # 查看版本
+          openCursor version
+          
+          # 开始使用
+          openCursor "Hello, how are you?"
+          ```
+          
+          ### 🛠️ 环境变量
+          
+          - `OPENAI_API_KEY`: DeepSeek API密钥 (必需)
+          - `MODEL`: 模型名称 (默认: deepseek-chat)
+          - `BASE_URL`: API基础URL (默认: https://api.deepseek.com/v1)
+          
+          ---
+          
+          如有问题请提交 [Issue](https://github.com/${{ github.repository }}/issues)
+        draft: false
+        prerelease: false
+        files: |
+          ./release-assets/*
+        token: ${{ secrets.GITHUB_TOKEN }} 
