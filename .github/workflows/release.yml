@@ -4,6 +4,8 @@ on:
   push:
     tags:
       - 'v*.*.*'  # 触发条件：推送版本标签，如 v0.1.0
+  release:
+    types: [created, published]  # 在GitHub界面创建或发布release时触发
   workflow_dispatch:  # 允许手动触发
 
 env:
@@ -70,7 +72,12 @@ jobs:
         GOARCH: ${{ matrix.arch }}
         CGO_ENABLED: 0
       run: |
-        VERSION=${GITHUB_REF#refs/tags/}
+        if [[ "${{ github.event_name }}" == "release" ]]; then
+          VERSION="${{ github.event.release.tag_name }}"
+        else
+          VERSION=${GITHUB_REF#refs/tags/}
+        fi
+        echo "Building version: $VERSION"
         go build -ldflags="-s -w -X main.Version=$VERSION" -o ${{ matrix.binary_name }}
 
     - name: Upload artifact
@@ -84,7 +91,7 @@ jobs:
     name: Create Release
     needs: build
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'release'
     permissions:
       contents: write
 
@@ -107,12 +114,13 @@ jobs:
         sha256sum * > checksums.txt
         ls -la
 
-    - name: Create Release
+    - name: Upload Release Assets
       uses: softprops/action-gh-release@v1
       with:
-        name: Release ${{ github.ref_name }}
+        tag_name: ${{ github.event_name == 'release' && github.event.release.tag_name || github.ref_name }}
+        name: Release ${{ github.event_name == 'release' && github.event.release.tag_name || github.ref_name }}
         body: |
-          ## 🚀 openCursor ${{ github.ref_name }}
+          ## 🚀 openCursor ${{ github.event_name == 'release' && github.event.release.tag_name || github.ref_name }}
           
           ### 📦 下载说明
           
@@ -132,7 +140,7 @@ jobs:
           **macOS/Linux:**
           ```bash
           # 下载对应你系统的二进制文件
-          wget https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/openCursor-darwin-amd64
+          wget https://github.com/${{ github.repository }}/releases/download/${{ github.event_name == 'release' && github.event.release.tag_name || github.ref_name }}/openCursor-darwin-amd64
           
           # 重命名并添加执行权限
           mv openCursor-darwin-amd64 openCursor
